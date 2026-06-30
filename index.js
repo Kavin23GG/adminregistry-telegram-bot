@@ -7,7 +7,7 @@ const client = new MongoClient(process.env.MONGO_URI);
 let db, devicesCollection;
 
 const activeCaregiverBots = new Map();
-const MAX_CAREGIVERS = 5; // Enforce limit per device
+const MAX_CAREGIVERS = 5; 
 
 async function connectDB() {
   try {
@@ -22,7 +22,7 @@ async function connectDB() {
 }
 connectDB();
 
-// 2. Initialize the Main Registry Bot (The Enrollment Office)
+// 2. Initialize the Main Registry Bot
 const mainRegistryBot = new Telegraf(process.env.MAIN_BOT_TOKEN);
 
 // 3. Phase 1: Robust Registration Wizard Steps on the Main Bot
@@ -60,15 +60,13 @@ const registrationWizard = new Scenes.WizardScene(
     await ctx.reply("Checking device registry database... please wait.");
 
     try {
-      // Look up if this device ID is already in your MongoDB collection
       const deviceExists = await devicesCollection.findOne({ device_id: inputId });
 
       if (deviceExists) {
         await ctx.reply(`❌ **ERROR:** Device ID [${inputId}] already exists in the system and is assigned to patient: ${deviceExists.patient_name}.\n\nRegistration stopped. Type /register to start over with a different ID.`);
-        return ctx.scene.leave(); // Boot them out of the registration wizard safely
+        return ctx.scene.leave(); 
       }
 
-      // If it doesn't exist, store it and proceed to confirmation
       ctx.wizard.state.userData.deviceId = inputId;
       const { caregiverName, patientName } = ctx.wizard.state.userData;
       
@@ -103,7 +101,7 @@ const registrationWizard = new Scenes.WizardScene(
     return ctx.wizard.next();
   },
 
-  // Step 6: Validate Custom Token with Telegram Servers & Stage Database Object
+  // Step 6: Validate Custom Token & Stage Database Object with Creator Tracking
   async (ctx) => {
     if (!ctx.message || !ctx.message.text) return ctx.reply("Please send a valid token.");
     const customToken = ctx.message.text.trim();
@@ -112,18 +110,17 @@ const registrationWizard = new Scenes.WizardScene(
 
     await ctx.reply("Validating bot token with Telegram servers... please wait.");
 
-    // --- LIVE TOKEN VERIFICATION LOOP ---
     try {
       const testBot = new Telegraf(customToken);
-      await testBot.telegram.getMe(); // Fails if token is broken
+      await testBot.telegram.getMe(); 
     } catch (tokenError) {
       console.error("Token verification failed:", tokenError.message);
-      await ctx.reply("❌ **INVALID BOT TOKEN.** Telegram rejected this token. Please check your BotFather copy-paste string and type /register to start again.");
+      await ctx.reply("❌ **INVALID BOT TOKEN.** Telegram rejected this token. Please check your BotFather string and type /register to start again.");
       return ctx.scene.leave();
     }
 
     try {
-      // Save data configuration as PENDING setup
+      // Save data configuration as PENDING setup and record creator_chat_id
       await devicesCollection.updateOne(
         { device_id: deviceId },
         { 
@@ -131,6 +128,7 @@ const registrationWizard = new Scenes.WizardScene(
             patient_name: patientName, 
             bot_token: customToken, 
             status: "PENDING",
+            creator_chat_id: mainBotChatId, // Perma-tracks who owns the main bot registry
             registration_initiator_chat_id: mainBotChatId,
             pending_caregiver: {
               username: ctx.from.username || 'unknown',
@@ -142,7 +140,6 @@ const registrationWizard = new Scenes.WizardScene(
         { upsert: true }
       );
 
-      // Programmatically register the webhook route for the custom bot
       await setupCaregiverBotWebhook(customToken);
 
       await ctx.reply(
@@ -166,7 +163,7 @@ mainRegistryBot.use(stage.middleware());
 mainRegistryBot.command('start', (ctx) => ctx.reply("Welcome to AidBand! Type /register to initiate device configuration."));
 mainRegistryBot.command('register', (ctx) => ctx.scene.enter('registration-wizard'));
 
-// 4. Phase 2: Handshake Verification Router & Max Limit Check for Custom Bots
+// 4. Phase 2: Handshake Verification & Alerting Admin Bot of Join Requests
 async function setupCaregiverBotWebhook(token) {
   if (activeCaregiverBots.has(token)) return;
 
@@ -182,18 +179,27 @@ async function setupCaregiverBotWebhook(token) {
         return ctx.reply("This bot is not paired with a device configuration. Please open the Main Registry Bot.");
       }
 
-      // --- MAX CAREGIVER LIMIT THRESHOLD ---
+      // 1. DUPLICATE CHECK
+      const isAlreadyRegistered = device.caregivers && device.caregivers.some(c => c.telegram_id === customBotChatId);
+
+      if (isAlreadyRegistered) {
+        return ctx.reply(
+          `👋 **Welcome back!**\n\n` +
+          `You are already actively registered to receive alerts for:\n` +
+          `Device ID: [${device.device_id}]\n` +
+          `Patient Name: ${device.patient_name}\n\n` +
+          `Everything is working perfectly.`
+        );
+      }
+
+      // 2. MAX LIMIT CHECK
       if (device.caregivers && device.caregivers.length >= MAX_CAREGIVERS) {
-        const isAlreadyRegistered = device.caregivers.some(c => c.telegram_id === customBotChatId);
-        if (!isAlreadyRegistered) {
-          return ctx.reply(`❌ **Registration Limit Reached:** This device has already reached its maximum allowance of ${MAX_CAREGIVERS} registered caregivers.`);
-        }
+        return ctx.reply(`❌ **Registration Limit Reached:** This device has already reached its maximum allowance of ${MAX_CAREGIVERS} registered caregivers.`);
       }
 
       let caregiverName = ctx.from.first_name || 'Caregiver';
       let username = ctx.from.username || 'unknown';
 
-      // Pull down clean metadata from wizard registration state if first boot
       if (device.status === "PENDING" && device.pending_caregiver) {
         caregiverName = device.pending_caregiver.caregiver_name;
         username = device.pending_caregiver.username;
@@ -205,7 +211,7 @@ async function setupCaregiverBotWebhook(token) {
         caregiver_name: caregiverName
       };
 
-      // Set document status to active and shift values into the array safely
+      // Update MongoDB safely
       await devicesCollection.updateOne(
         { bot_token: token },
         { 
@@ -215,6 +221,7 @@ async function setupCaregiverBotWebhook(token) {
         }
       );
 
+      // Confirm to the person who clicked start on the custom bot
       await ctx.reply(
         `🎉 **Successfully Linked!**\n\n` +
         `Device ID: [${device.device_id}]\n` +
@@ -222,7 +229,27 @@ async function setupCaregiverBotWebhook(token) {
         `You are now an authorized recipient of critical monitoring broadcasts from this bot.`
       );
 
-      // Trigger cross-communication text to the main bot gateway context
+      // --- NEW FEATURE: NOTIFY DEVICE ADMIN BOT OWNER ---
+      const adminChatId = device.creator_chat_id || device.registration_initiator_chat_id;
+      
+      // Only ping if the person joining isn't the admin themselves!
+      if (adminChatId && adminChatId !== customBotChatId) {
+        try {
+          await mainRegistryBot.telegram.sendMessage(
+            adminChatId,
+            `👤 **New Caregiver Registered!**\n\n` +
+            `A new user has accessed your custom bot and linked to your device:\n` +
+            `• **Name:** ${caregiverName}\n` +
+            `• **Username:** @${username}\n` +
+            `• **Chat ID:** ${customBotChatId}\n\n` +
+            `**Device affected:** [${device.device_id}] (${device.patient_name})`
+          );
+        } catch (err) {
+          console.error("Could not notify admin regarding join event:", err.message);
+        }
+      }
+
+      // Initial validation response back to registration loop channel
       if (device.status === "PENDING" && device.registration_initiator_chat_id) {
         try {
           await mainRegistryBot.telegram.sendMessage(
@@ -230,7 +257,7 @@ async function setupCaregiverBotWebhook(token) {
             `✅ **Device Activation Confirmed!** Handshake verified successfully for Device [${device.device_id}].`
           );
         } catch (err) {
-          console.log("Could not contact main bot gateway stream.");
+          console.log("Could not contact main bot channel.");
         }
       }
 
