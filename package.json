@@ -1,0 +1,10 @@
+{
+  "name": "free-telegram-mongodb-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "express": "^4.19.0",
+    "mongodb": "^6.5.0",
+    "telegraf": "^4.16.0"
+  }
+}
