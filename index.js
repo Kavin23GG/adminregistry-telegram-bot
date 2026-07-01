@@ -8,12 +8,15 @@ let db, devicesCollection;
 
 async function connectDB() {
   try {
-    await client.connect();
+    console.log("Attempting to connect to MongoDB...");
+    // Add a connection timeout fallback parameter so it doesn't hang indefinitely
+    await client.connect({ serverSelectionTimeoutMS: 5000 });
     db = client.db('Device_Registry'); 
     devicesCollection = db.collection('Devices'); 
     console.log("Connected securely to MongoDB Atlas");
   } catch (err) {
-    console.error("MongoDB connection error:", err);
+    console.error("❌ CRITICAL: MongoDB connection failed to initialize:", err.message);
+    // Let the server stay alive or fail gracefully
   }
 }
 connectDB();
