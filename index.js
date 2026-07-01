@@ -170,7 +170,11 @@ bot.on('new_chat_members', async (ctx) => {
       });
 
       if (!pendingDevice) {
-        return ctx.reply("⚠️ Hello Caregivers! I was added to this group, but I couldn't find a pending registration from the person who invited me. Please complete registration in my DMs via /register.");
+        await ctx.reply("⚠️ I couldn't find a pending registration from the person who invited me. I can only stay in authorized care groups. Leaving chat...");
+  
+        // 🚪 Force the bot to automatically leave this group chat
+        await ctx.telegram.leaveChat(groupChatId);
+        return;
       }
 
       await devicesCollection.updateOne(
